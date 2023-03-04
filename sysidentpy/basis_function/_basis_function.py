@@ -1,8 +1,9 @@
-from itertools import combinations_with_replacement
-
 import numpy as np
+import pywt
 
+from itertools import combinations_with_replacement
 from sysidentpy.narmax_base import InformationMatrix
+from sysidentpy.basis_function._bspline import BSplineWavelets
 
 
 class Polynomial(InformationMatrix):
@@ -62,16 +63,17 @@ class Polynomial(InformationMatrix):
         """
         # Create combinations of all columns based on its index
         iterable_list = range(data.shape[1])
-        combinations = list(combinations_with_replacement(iterable_list, self.degree))
+        combinations = list(
+            combinations_with_replacement(iterable_list, self.degree))
         if predefined_regressors is not None:
-            combinations = [combinations[index] for index in predefined_regressors]
-
-        psi = np.column_stack(
-            [
-                np.prod(data[:, combinations[i]], axis=1)
-                for i in range(len(combinations))
+            combinations = [
+                combinations[index] for index in predefined_regressors
             ]
-        )
+
+        psi = np.column_stack([
+            np.prod(data[:, combinations[i]], axis=1)
+            for i in range(len(combinations))
+        ])
         psi = psi[max_lag:, :]
         return psi
 
@@ -103,12 +105,10 @@ class Fourier:
         self.ensemble = ensemble
 
     def _fourier_expansion(self, data, n):
-        base = np.column_stack(
-            [
-                np.cos(2 * np.pi * data * n / self.p),
-                np.sin(2 * np.pi * data * n / self.p),
-            ]
-        )
+        base = np.column_stack([
+            np.cos(2 * np.pi * data * n / self.p),
+            np.sin(2 * np.pi * data * n / self.p),
+        ])
         return base
 
     def fit(self, data, max_lag, predefined_regressors=None):
@@ -147,11 +147,112 @@ class Fourier:
 
         for col in columns:
             base_col = np.column_stack(
-                [self._fourier_expansion(data[:, col], h) for h in harmonics]
-            )
+                [self._fourier_expansion(data[:, col], h) for h in harmonics])
             psi = np.column_stack([psi, base_col])
 
         self.repetition = self.n * 2
+        if self.ensemble:
+
+            psi = psi[:, 1:]
+            psi = np.column_stack([data, psi])
+        else:
+            psi = psi[:, 1:]
+
+        if predefined_regressors is None:
+            return psi, self.ensemble
+        else:
+            return psi[:, predefined_regressors], self.ensemble
+
+    def transform(self, data, max_lag, predefined_regressors=None):
+        return self.fit(data, max_lag, predefined_regressors)
+
+
+class WaveletMRA:
+
+    def __init__(self,
+                 degree,
+                 wavelet,
+                 level=None,
+                 wavelet_transform='dwt',
+                 mode='symmetric',
+                 ensemble=True):
+        self.degree = degree
+        self.wavelet = wavelet
+        self.level = level
+        self.wavelet_transform = wavelet_transform
+        self.mode = mode
+        self.ensemble = ensemble
+
+    def _wavelet_mra(self, data):
+        _data = np.hstack(
+            pywt.mra(np.reshape(data, (-1, 1)),
+                     self.wavelet,
+                     level=self.level,
+                     axis=0,
+                     transform=self.wavelet_transform,
+                     mode=self.mode))
+        # print(data.shape, _data.shape)
+        return _data
+
+    def fit(self, data, max_lag, predefined_regressors=None):
+
+        # remove intercept (because the data always have the intercept)
+        if self.degree > 1:
+            data = Polynomial().fit(data, max_lag, predefined_regressors=None)
+            data = data[:, 1:]
+        else:
+            data = data[max_lag:, 1:]
+
+        psi = np.zeros([len(data), 1])
+        psi = np.column_stack([
+            psi,
+            np.hstack(
+                pywt.mra(data,
+                         self.wavelet,
+                         axis=0,
+                         level=self.level,
+                         transform=self.wavelet_transform,
+                         mode=self.mode))
+        ])
+
+        self.repetition = self.level + 1
+        if self.ensemble:
+
+            psi = psi[:, 1:]
+            psi = np.column_stack([data, psi])
+        else:
+            psi = psi[:, 1:]
+
+        if predefined_regressors is None:
+            return psi, self.ensemble
+        else:
+            return psi[:, predefined_regressors], self.ensemble
+
+    def transform(self, data, max_lag, predefined_regressors=None):
+        return self.fit(data, max_lag, predefined_regressors)
+
+
+class WaveletBSpline:
+
+    def __init__(self, degree, order, ensemble=True):
+        self.degree = degree
+        self.order = order
+        self.bs = BSplineWavelets.get_bspline(order=order)
+        self.ensemble = ensemble
+
+    def fit(self, data, max_lag, predefined_regressors=None):
+
+        # remove intercept (because the data always have the intercept)
+        if self.degree > 1:
+            data = Polynomial().fit(data, max_lag, predefined_regressors=None)
+            data = data[:, 1:]
+        else:
+            data = data[max_lag:, 1:]
+
+        psi = np.zeros([len(data), 1])
+        psi = np.column_stack([psi, self.bs.decompose(data)])
+
+        self.repetition = self.bs.repetition
         if self.ensemble:
 
             psi = psi[:, 1:]
